@@ -1,0 +1,32 @@
+{
+  "project": {
+    "name": "Interview Analysis Pipeline",
+    "version": "1.0.0",
+    "description": "Semantic analysis pipeline for interview audio files"
+  },
+  "paths": {
+    "base_dir": ".",
+    "data_dir": "data",
+    "raw_audio_dir": "data/raw",
+    "processed_dir": "data/processed",
+    "results_dir": "data/results",
+    "logs_dir": "logs"
+  },
+  "processing": {
+    "batch_size": 4,
+    "num_workers": 2,
+    "device": "auto",
+    "whisper_model": "small",
+    "language_detection": false,
+    "translation_enabled": false
+  },
+  "logging": {
+    "level": "INFO",
+    "file": "logs/pipeline.log",
+    "rotation": "10 MB",
+    "retention": "30 days"
+  },
+  "huggingface": {
+    "token": "hf_YOUR_HUGGINGFACE_TOKEN_HERE"
+  }
+}

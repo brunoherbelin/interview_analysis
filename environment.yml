@@ -1,0 +1,9 @@
+name: interview_analysis
+channels:
+  - conda-forge
+dependencies:
+  - python=3.14
+  - pip
+  - ffmpeg          # required by the scanner (m4a->wav) and audio loading
+  - pip:
+    - -r requirements.txt

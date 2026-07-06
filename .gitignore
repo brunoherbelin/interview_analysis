@@ -1,0 +1,33 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+
+# --- Virtual environment (includes downloaded models: amrlib, senticnet) ---
+venv/
+.venv/
+
+# --- Local config with secrets (HF token). Use configs/config.example.json ---
+configs/config.json
+
+# --- Data: keep folder structure only (.gitkeep), ignore all contents ---
+data/raw/*
+data/processed/*
+data/results/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/results/.gitkeep
+
+# --- Logs ---
+logs/*
+!logs/.gitkeep
+
+# --- Reference papers (copyrighted, not for redistribution) ---
+Refs/
+
+# --- Editor / tooling / OS ---
+.vscode/
+.claude/
+.DS_Store
+*.swp
