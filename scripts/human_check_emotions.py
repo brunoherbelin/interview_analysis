@@ -8,11 +8,19 @@ topic concept is looked up in SenticNet, which returns Hourglass moodtags
 shows representative sentences whose concepts triggered it (with the trigger word) —
 so you can judge whether the sentence really conveys that emotion.
 
+Before any verification it runs a knowledge-graph integrity check: it guards
+against the silent parse-model-collapse failure mode where an interview's
+utterances exist but carry no FRED individuals (0 fromUtterance links), which
+makes every downstream stage report "0 utterances". If any interview has no
+analysable content the script stops (re-run --kg) unless --force is given.
+
 Usage:
-  venv/bin/python scripts/human_check_emotions.py               # interactive verify
+  venv/bin/python scripts/human_check_emotions.py               # check KG, then interactive verify
+  venv/bin/python scripts/human_check_emotions.py --check-only  # only run the KG integrity check
   venv/bin/python scripts/human_check_emotions.py --list        # just print examples
   venv/bin/python scripts/human_check_emotions.py --per-emotion 8
   venv/bin/python scripts/human_check_emotions.py --emotion joy
+  venv/bin/python scripts/human_check_emotions.py --force       # verify even if KG check fails
 
 Interactive controls per sentence: y = fits, n = does not, s = skip, q = quit.
 Reports per-emotion agreement and saves to data/results/emotion_check_<ts>.json.
@@ -28,6 +36,71 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.config import config, logger
 from src.text.opinions import extract_interview, ConceptAffect
+
+
+def check_kg_integrity(min_ok_fraction: float = 0.5) -> tuple[bool, dict]:
+    """Verify the knowledge graphs actually carry analysable content.
+
+    For each interview it compares the build stats (kg.json: n_utterances_ok) with
+    what the analysis query really retrieves (extract_interview), and flags:
+      - BROKEN  : no utterance carries any FRED individual (the analysis sees 0),
+                  i.e. the parse-model-collapse failure mode.
+      - degraded: <min_ok_fraction of utterances converted (a partial collapse).
+
+    Returns (ok, report); ok is False iff at least one interview is BROKEN.
+    """
+    kg_root = Path(config.get("paths.processed_dir")) / "knowledge_graph"
+    ttls = sorted(kg_root.glob("*/*.ttl"))
+    report = {"n_interviews": len(ttls), "usable_utterances": 0,
+              "broken": [], "degraded": [], "error": None}
+    if not ttls:
+        report["error"] = f"No knowledge graphs under {kg_root}; run --kg first."
+        return False, report
+
+    for ttl in ttls:
+        # build stats sidecar (e.g. VM11-1-Sync.SPEAKER_01.ttl -> ....kg.json)
+        n_utt = n_ok = None
+        stats_path = ttl.parent / (ttl.stem + ".kg.json")
+        if stats_path.exists():
+            try:
+                s = json.load(open(stats_path, encoding="utf-8"))
+                n_utt, n_ok = s.get("n_utterances"), s.get("n_utterances_ok")
+            except Exception:
+                pass
+
+        interview = extract_interview(ttl)
+        n_usable = len(interview["utterances"]) if interview else 0
+        report["usable_utterances"] += n_usable
+
+        name = f"{ttl.parent.name}/{ttl.stem}"
+        if n_usable == 0:
+            report["broken"].append({"interview": name, "n_utterances": n_utt, "n_ok": n_ok})
+        elif n_ok and n_utt and (n_ok / n_utt) < min_ok_fraction:
+            report["degraded"].append({"interview": name, "n_ok": n_ok, "n_utterances": n_utt})
+
+    return (not report["broken"]), report
+
+
+def print_kg_report(report: dict) -> None:
+    print("=" * 60)
+    print("KNOWLEDGE-GRAPH INTEGRITY CHECK")
+    print(f"  interviews: {report['n_interviews']}   "
+          f"usable utterances: {report['usable_utterances']}")
+    if report["error"]:
+        print(f"  ERROR: {report['error']}")
+    if report["degraded"]:
+        print(f"  degraded ({len(report['degraded'])}, low conversion rate):")
+        for d in report["degraded"]:
+            print(f"      {d['interview']}  ok={d['n_ok']}/{d['n_utterances']}")
+    if report["broken"]:
+        print(f"  BROKEN ({len(report['broken'])}) — no analysable content:")
+        for b in report["broken"]:
+            print(f"      {b['interview']}  build ok={b['n_ok']}/{b['n_utterances']}")
+        print("  -> re-run:  python -m src.pipeline.run --kg "
+              "(silent AMR parse-model collapse; see src/text/knowledge_graph.py)")
+    elif not report["error"]:
+        print("  OK — every interview has analysable content.")
+    print("=" * 60)
 
 
 def collect(affect, min_words=4) -> dict:
@@ -92,8 +165,21 @@ def main() -> int:
     ap.add_argument("--emotion", type=str, default=None, help="restrict to one emotion (e.g. joy)")
     ap.add_argument("--min-words", type=int, default=4, help="skip sentences shorter than this")
     ap.add_argument("--list", action="store_true", help="just print examples, no prompts")
+    ap.add_argument("--check-only", action="store_true",
+                    help="only run the knowledge-graph integrity check, then exit")
+    ap.add_argument("--force", action="store_true",
+                    help="run the emotion check even if the KG integrity check fails")
     args = ap.parse_args()
     k = max(1, min(20, args.per_emotion))
+
+    # 1. Verify the knowledge graphs are analysable before checking emotions.
+    kg_ok, kg_report = check_kg_integrity()
+    print_kg_report(kg_report)
+    if args.check_only:
+        return 0 if kg_ok else 1
+    if not kg_ok and not args.force:
+        logger.error("Knowledge-graph check failed; re-run --kg (or pass --force to continue).")
+        return 1
 
     affect = ConceptAffect()
     per_emotion = collect(affect, args.min_words)

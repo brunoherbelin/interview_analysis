@@ -55,6 +55,10 @@ python -m src.pipeline.run --opinions
 # Run every step in order: diarize -> transcribe -> sentiment -> topics -> kg -> opinions
 python -m src.pipeline.run --all
 
+# Restrict any step to specific VM(s): --vm accepts names or bare numbers
+python -m src.pipeline.run --kg --vm VM11        # single VM
+python -m src.pipeline.run --kg --vm 11 27        # several VMs
+
 # Human check of diarization + transcription (after the pipeline)
 python scripts/human_check_transcript.py --per-file 3
 ```
@@ -98,10 +102,13 @@ interview_analysis/
 │       ├── sync_async_paired.png             # paired-line plot per measure
 │       ├── sync_async_method_correlation.png
 │       ├── sentiment_histograms.png          # score distributions (normality check)
-│       ├── representative_topics.csv         # ranked shared topics
-│       ├── topic_participant_heatmap.png     # topic × participant sentiment
-│       ├── top_topics_coverage.png           # coverage bar (consensus-coloured)
-│       ├── emotion_profile.png               # corpus Hourglass emotions
+│       ├── representative_opinions.csv       # ranked shared opinions (from KG)
+│       ├── opinion_participant_heatmap.png   # opinion topic × participant sentiment
+│       ├── top_opinions_coverage.png         # coverage bar (consensus-coloured)
+│       ├── opinion_emotion_profile.png       # corpus Hourglass emotions (SenticNet)
+│       ├── representative_topics.csv         # ranked BERTopic topics (all participants)
+│       ├── topic_participant_heatmap.png     # topic × participant prevalence
+│       ├── top_topics_coverage.png           # topic coverage bar (size-annotated)
 │       ├── semantic_categories.csv           # act + theme categories
 │       ├── semantic_act_heatmap.png          # act category × participant sentiment
 │       ├── semantic_theme_heatmap.png        # theme category × participant sentiment
@@ -648,21 +655,38 @@ Outputs: `sync_async_sentiment_scores.csv`, `sync_async_sentiment_tests.json`,
 > With only a few participants this validates the **procedure**, not significance
 > (Wilcoxon cannot reach p<0.05 below n=6).
 
-### Aspect 2 — representative topics & opinions (all participants)
+### Aspect 2 — representative opinions (from the knowledge graph)
+
+```bash
+python -m src.analysis.representative_opinions
+```
+
+Pools Sync + Async and reads `opinions.json` (built from the knowledge-graph →
+SenticNet pipeline) to represent, across the whole group: the most representative
+opinion topics (by participant coverage), each topic's consensus sentiment (shared
+vs contested), and the corpus emotion profile. Because it depends on the knowledge
+graphs, it only covers participants whose KGs were built.
+
+Outputs: `representative_opinions.csv`, `opinion_participant_heatmap.png` (topic ×
+participant sentiment; grey = not mentioned), `top_opinions_coverage.png` (coverage
+bar coloured by consensus), `opinion_emotion_profile.png` (SenticNet Hourglass emotions).
+
+### Aspect 2b — representative topics (BERTopic, all participants)
 
 ```bash
 python -m src.analysis.representative_topics
 ```
 
-Pools Sync + Async and reads `opinions.json` to represent, across the whole group:
-the most representative topics (by participant coverage), each topic's consensus
-sentiment (shared vs contested), and the corpus emotion profile.
+Reads the topic-modeling outputs (`data/processed/topics/`) instead of the
+knowledge graph, so it covers **every** participant. Pools Sync + Async and ranks
+topics by participant coverage then prevalence; the heatmap cell is the share of a
+participant's utterances assigned to the topic, and Sync/Async prevalence is compared.
 
 Outputs: `representative_topics.csv`, `topic_participant_heatmap.png` (topic ×
-participant sentiment; grey = not mentioned), `top_topics_coverage.png` (coverage
-bar coloured by consensus), `emotion_profile.png` (SenticNet Hourglass emotions).
+participant prevalence; grey = absent), `top_topics_coverage.png` (coverage bar,
+annotated with corpus-wide topic size).
 
-### Aspect 2b — semantic categories ("beyond words")
+### Aspect 2c — semantic categories ("beyond words")
 
 ```bash
 python -m src.analysis.semantic_categories
@@ -686,7 +710,7 @@ Sync/Async, Hourglass emotions). Outputs: `semantic_categories.csv`,
 > Noun sense selection is first-sense, so a few words land in a coarse class;
 > the verb/act axis is cleaner (frames are disambiguated by the AMR parse).
 
-### Aspect 2c — ACT × THEME cross-tab
+### Aspect 2d — ACT × THEME cross-tab
 
 ```bash
 python -m src.analysis.theme_act_crosstab

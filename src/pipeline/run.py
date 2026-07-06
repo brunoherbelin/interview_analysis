@@ -86,6 +86,14 @@ def create_parser():
     )
 
     parser.add_argument(
+        "--vm",
+        nargs="+",
+        metavar="VM",
+        default=None,
+        help="Restrict every step to specific VM(s), e.g. --vm VM11 or --vm 11 12 (default: all)"
+    )
+
+    parser.add_argument(
         "--all",
         action="store_true",
         help="Run every analysis step in order: diarize, transcribe, sentiment, topics, kg, opinions"
@@ -303,6 +311,20 @@ def main() -> int:
     if not dataset:
         logger.error("No audio files found to process")
         return 1
+
+    # Optionally restrict to specific VM(s) (e.g. --vm VM11, or --vm 11 12)
+    if args.vm:
+        wanted = {(f"VM{v}" if v.strip().isdigit() else v.strip()).upper() for v in args.vm}
+        filtered = {k: v for k, v in dataset.items() if k.upper() in wanted}
+        missing = wanted - {k.upper() for k in dataset}
+        if missing:
+            logger.warning(f"Requested VM(s) not found and skipped: {', '.join(sorted(missing))}")
+        if not filtered:
+            logger.error(f"None of the requested VM(s) match the dataset. "
+                         f"Available: {', '.join(dataset)}")
+            return 1
+        dataset = filtered
+        logger.info(f"Restricted to {len(dataset)} VM(s): {', '.join(dataset)}")
 
     # Scan only mode
     if args.scan:

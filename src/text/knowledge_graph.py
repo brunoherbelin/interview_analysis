@@ -52,19 +52,25 @@ class KnowledgeGraphBuilder:
     """Local Text2AMR2FRED: amrlib parse + py_amr2fred AMR->RDF."""
 
     def __init__(self):
-        self.device = config.get("processing.device", "cpu")
-        self._load()
-
-    def _load(self):
-        import amrlib
         from py_amr2fred import Amr2fred
+
+        self.device = config.get("processing.device", "cpu")
+        # Both models are stateless across interviews (py_amr2fred's parser
+        # reinitialises on every parse), so they are loaded once and reused.
+        # py_amr2fred does leak one bit of per-parse state across calls — see
+        # amr_to_graph for the reset that works around it.
+        self.amr2fred = Amr2fred()
+        self.stog = None
+        self.load_parser()
+
+    def load_parser(self):
+        """Load the amrlib AMR parse model (local)."""
+        import amrlib
 
         logger.info(f"Loading amrlib parse model (local) on {self.device}")
         self.stog = amrlib.load_stog_model(
             device=self.device if self.device == "cuda" else "cpu"
         )
-        self.amr2fred = Amr2fred()
-        logger.info("Knowledge-graph models loaded successfully")
 
     def parse_to_amr(self, sentences: List[str]) -> List[Optional[str]]:
         """Batch text -> AMR (Penman strings)."""
@@ -72,6 +78,17 @@ class KnowledgeGraphBuilder:
 
     def amr_to_graph(self, amr: str) -> Graph:
         """AMR -> FRED RDF graph (rdflib Graph), fully local."""
+        # Work around a py_amr2fred bug: Node.endless / Node.endless2 are meant to
+        # be *per-parse* recursion guards, but Parser.parse() only resets its own
+        # Parser.endless counters, never these Node-level ones. They therefore leak
+        # across calls, and once they pass Glossary.ENDLESS (1000) — i.e. after
+        # ~1000 cumulative utterances in a run — every later parse silently returns
+        # broken/None nodes ("'NoneType' object has no attribute 'relation'/'parent'"),
+        # poisoning all remaining interviews. Reset them so each utterance starts clean.
+        from py_amr2fred.node import Node
+
+        Node.endless = 0
+        Node.endless2 = 0
         return self.amr2fred.translate(amr=amr, serialize=False, post_processing=False)
 
 
