@@ -55,21 +55,63 @@ _SIM_THRESHOLD = 0.72
 # --------------------------------------------------------------------------- #
 # SenticNet (offline) concept affect
 # --------------------------------------------------------------------------- #
+# Concrete/physical noun supersenses. Such referents ("body", "bed", "water",
+# "lake") are affectively neutral on their own — their valence in an experience
+# comes from the surrounding utterance (captured by the transformer sentiment),
+# not from an inherent word-level polarity. Generative SenticNet nonetheless assigns
+# them strong emotions (e.g. body -> -0.95 rage), which distorts the aggregates, so
+# we suppress concept-level affect for this whole class (see config.senticnet.
+# neutralize_concrete_nouns). This is a category rule, not a per-word stoplist.
+CONCRETE_SUPERSENSES = {
+    "noun.body", "noun.artifact", "noun.object", "noun.substance",
+    "noun.location", "noun.shape", "noun.plant", "noun.food",
+}
+
+
+@lru_cache(maxsize=8192)
+def _is_concrete_noun(concept: str) -> bool:
+    from nltk.corpus import wordnet as wn
+    syns = wn.synsets(concept.split()[0].replace(" ", "_"), pos=wn.NOUN)
+    return bool(syns) and syns[0].lexname() in CONCRETE_SUPERSENSES
+
+
 class ConceptAffect:
-    """Offline SenticNet lookup: concept -> polarity + Hourglass emotion."""
+    """Offline SenticNet lookup: concept -> polarity + Hourglass emotion.
+
+    Uses the downloaded SenticNet release when enabled (config.senticnet.download),
+    otherwise the bundled `senticnet` pip package. Both share the same list schema.
+    Concept-level affect for concrete/physical referents is suppressed by default
+    (config.senticnet.neutralize_concrete_nouns) — see CONCRETE_SUPERSENSES.
+    """
 
     def __init__(self):
-        from senticnet.senticnet import SenticNet
-        self.sn = SenticNet()
+        from src.text.senticnet_kb import load_concept_data
+        self._data = load_concept_data()      # None -> use the pip package
+        self._neutralize = config.get("senticnet.neutralize_concrete_nouns", True)
+        if self._data is None:
+            from senticnet.senticnet import SenticNet
+            self._sn = SenticNet()
 
     def lookup(self, concept: str) -> Optional[Dict[str, Any]]:
+        if self._neutralize and _is_concrete_noun(concept):
+            return None
+        if self._data is not None:
+            e = self._data.get(concept.replace(" ", "_"))
+            if not e:
+                return None
+            return {
+                "polarity": float(e[7]),
+                "moodtags": [m.lstrip("#") for m in e[4:6] if m],
+                "sentics": {"introspection": float(e[0]), "temper": float(e[1]),
+                            "attitude": float(e[2]), "sensitivity": float(e[3])},
+            }
         try:
-            d = self.sn.concept(concept)
+            d = self._sn.concept(concept)
         except KeyError:
             return None
         return {
             "polarity": float(d["polarity_value"]),
-            "moodtags": [m.lstrip("#") for m in d.get("moodtags", [])],
+            "moodtags": [m.lstrip("#") for m in d.get("moodtags", []) if m],
             # the 4 Hourglass affective dimensions (introspection/temper/attitude/sensitivity)
             "sentics": {k: float(v) for k, v in d.get("sentics", {}).items()},
         }

@@ -121,13 +121,19 @@ interview_analysis/
 │       ├── theme_act_sentiment.png           # ACT × THEME mean sentiment map
 │       ├── theme_act_frequency.png           # ACT × THEME co-occurrence counts
 │       ├── theme_act_crosstab_by_condition.csv
-│       ├── theme_act_sentiment_by_condition.png  # Sync | Async maps
+│       ├── theme_act_sentiment_by_condition.png  # Sync | Async sentiment maps
+│       ├── theme_act_frequency_by_condition.png  # Sync | Async frequency maps
+│       ├── theme_act_sentiment_by_order.png      # First | Second sentiment maps
+│       ├── theme_act_frequency_by_order.png      # First | Second frequency maps
 │       ├── theme_act_selected_bars.png       # Sync vs Async bars for key pairs
 │       ├── cluster_features.csv              # per-interview signature + cluster
 │       ├── cluster_validation.json           # k selection, stability, cluster×condition
 │       ├── cluster_profiles.png              # cluster × feature profile (interpretable)
 │       ├── cluster_pca.png                   # signature space (PCA), shape = Sync/Async
-│       └── cluster_pca_order.png             # signature space (PCA), shape = First/Second trial
+│       ├── cluster_pca_order.png             # signature space (PCA), shape = First/Second trial
+│       ├── condition_contrast.csv/.png       # paired Sync−Async feature contrast (+FDR)
+│       ├── order_contrast.csv/.png           # paired First−Second feature contrast (+FDR)
+│       └── order_scatter_joy_body.png        # First/Second in (joy, body-focus) space
 ├── configs/                # Configuration files
 │   └── config.json         # Main configuration
 ├── src/                    # Source code
@@ -167,6 +173,11 @@ Edit `configs/config.json` to customize:
     "token": "YOUR_HUGGINGFACE_TOKEN_HERE",
     "offline": true
   },
+  "senticnet": {
+    "download": true,
+    "path": "data/senticnet",
+    "url": "https://sentic.net/senticnet.zip"
+  },
   "logging": {
     "level": "INFO",
     "file": "logs/pipeline.log"
@@ -179,6 +190,12 @@ Edit `configs/config.json` to customize:
 - **Hugging Face Token**: Required for PyAnnote speaker diarization
 - **Flexible Paths**: Customize data directories
 - **Device Selection**: Auto-detects GPU/CPU
+- **SenticNet source**: with `senticnet.download: true`, the full SenticNet release
+  (~293k concepts) is fetched from `senticnet.url` into `senticnet.path` and cached
+  on first use (raising concept coverage of our corpus from ~31% to ~50% of
+  mentions); set `false` to use the bundled `senticnet` pip package (SenticNet 6,
+  ~200k). The cache (`data/senticnet/`) is git-ignored, so re-runs download once
+  and reuse it — no need to keep the raw file in the repo.
 
 **For Hugging Face token:**
 1. Get your token from https://huggingface.co/settings/tokens
@@ -746,11 +763,19 @@ environment**?". Outputs: `theme_act_crosstab.csv`, `theme_act_sentiment.png`
 (ACT × THEME mean-sentiment map), `theme_act_frequency.png` (co-occurrence counts).
 Cells backed by fewer than 2 participants are greyed out.
 
-It also compares the two axes **by condition**: `theme_act_sentiment_by_condition.png`
-(Sync | Async maps, shared scale) and `theme_act_selected_bars.png` — grouped bars
+It also splits the maps **by condition** (Sync | Async) and **by trial order**
+(First | Second), each as a shared-scale sentiment pair *and* a co-occurrence
+frequency pair: `theme_act_sentiment_by_condition.png`,
+`theme_act_frequency_by_condition.png`, `theme_act_sentiment_by_order.png`,
+`theme_act_frequency_by_order.png`. Plus `theme_act_selected_bars.png` — grouped bars
 (white = Sync, black = Async, ±SEM across participants) for a selection of ACT×THEME
 pairs (a few named ones plus the largest Sync/Async gaps that have support in both
-conditions). `theme_act_crosstab_by_condition.csv` has the per-condition cells.
+conditions). `theme_act_crosstab_by_condition.csv` has the per-condition cells, each
+with a **paired significance test** (participants present in both conditions): mean
+Sync−Async difference, `cohen_dz`, `wilcoxon_p`, and a Benjamini-Hochberg `p_fdr` /
+`fdr_significant` flag — so colour differences that are only noise are visible as
+non-significant. (On the current corpus, none survive FDR — condition sentiment
+differences are within noise; the systematic effect is trial *order*, see Aspect 3b.)
 
 ### Aspect 3 — interpretable clustering of interviews
 
@@ -775,6 +800,35 @@ coloured by cluster, shape = Sync/Async and First/Second trial respectively),
 cluster × Sync/Async).
 
 > Meaningful at **n ≳ 30 participants** (expect 2–4 clusters)
+
+### Aspect 3b — paired feature contrast (what differs by condition / order)
+
+```bash
+python -m src.analysis.condition_contrast                 # Sync − Async
+python -m src.analysis.condition_contrast --factor order  # First − Second trial
+```
+
+Clustering showed the conditions don't form separable groups — but a systematic
+*shift* can still exist. Since the factor is a **known label** and the design is
+**within-subject** (each VM has both levels), this is a supervised paired contrast,
+not clustering. Over a broad, interpretable KG feature pool (Hourglass emotion
+prevalences, ACT / THEME category shares, top ACT × THEME cells, SenticNet
+polarity) it computes, per feature, the paired difference, **Cohen's dz**, paired
+t-test + **Wilcoxon**, and a **Benjamini–Hochberg FDR** correction across all
+features. The significant (or, absent those, largest) contrasts are plotted.
+
+Outputs (per factor): `<factor>_contrast.csv` (every feature: Δ, dz, p, p_FDR,
+direction), `<factor>_contrast.png` (contrasts by signed dz; `*` = FDR-significant),
+`<factor>_contrast_summary.json`, and — when significant body-related contrasts
+exist — `<factor>_scatter_joy_body.png`, a 2-D view of every interview (marker =
+level) with joy prevalence on x and a composite "body focus" score (mean z of the
+significant body contrasts) on y, plus group-mean markers, so the two levels'
+distributions can be compared directly.
+
+> On the current corpus: **order** yields several FDR-significant contrasts (more
+> body / joy / perception talk in the *first* trial, more event talk in the
+> *second*), whereas **condition** (Sync/Async) yields none — a systematic
+> order/habituation effect rather than a condition effect.
 
 ## License
 

@@ -7,7 +7,7 @@ uninterpretable), each interview is reduced to a small, NAMED signature chosen f
 prior analyses — features that are prevalent across participants (so they describe
 the shared experience) and/or discriminate Sync vs Async:
 
-  - joy / eagerness / pleasantness — prevalence of these Hourglass emotions
+  - ecstasy / loathing / bliss — prevalence of the corpus's top Hourglass emotions
   - body — thinking about / feeling in the body (cognition/emotion acts × body theme)
   - motion — describing movement (motion acts over state/object/artifact themes),
     a Sync/Async discriminator
@@ -49,15 +49,16 @@ from src.text.opinions import (
 )
 from src.analysis.semantic_categories import _supersense
 
-FEATURES = ["joy", "eagerness", "pleasantness", "body", "motion", "polarity"]
+# Criterion 1 — the most prevalent Hourglass emotions in the corpus (per-interview
+# intensity varies). MOODTAGS is the single source of truth (the emotion feature
+# columns are built from it); re-derive it if the SenticNet source/labels change.
+MOODTAGS = ["joy", "eagerness", "pleasantness"]
+FEATURES = MOODTAGS + ["body", "motion", "polarity"]
 FEATURE_LABELS = {
-    "joy": "emotion: joy", "eagerness": "emotion: eagerness",
-    "pleasantness": "emotion: pleasantness",
+    **{m: f"emotion: {m}" for m in MOODTAGS},
     "body": "body (cognition/emotion)", "motion": "motion × state/object",
     "polarity": "sentiment (SenticNet)",
 }
-# Criterion 1 — prevalent Hourglass emotions (per-interview intensity varies).
-MOODTAGS = ["joy", "eagerness", "pleasantness"]
 # Criterion 2 — ACT × THEME cells: thinking/feeling about the body, and motion
 # dynamics (state/object/artifact themes) which discriminate Sync/Async.
 BODY_ACTS = {"verb.cognition", "verb.emotion"}
@@ -143,15 +144,15 @@ def interview_features(ttl_path: Path, affect: ConceptAffect):
         return sum(1 for d in per.values()
                    if (d["acts"] & acts_ok) and (d["themes"] & themes_ok)) / n
 
-    return {
+    row = {
         "vm": vm, "interview": itype, "base": base, "order": _trial_order(base),
-        "joy": mood_counts["joy"] / n,
-        "eagerness": mood_counts["eagerness"] / n,
-        "pleasantness": mood_counts["pleasantness"] / n,
         "body": act_theme_share(BODY_ACTS, {"noun.body"}),
         "motion": act_theme_share({"verb.motion"}, MOTION_THEMES),
         "polarity": mean(polarities) if polarities else 0.0,
     }
+    for m in MOODTAGS:
+        row[m] = mood_counts[m] / n
+    return row
 
 
 def select_k(X, k_range):

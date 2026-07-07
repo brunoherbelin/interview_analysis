@@ -23,6 +23,7 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from scipy.stats import wilcoxon
 
 from src.config import config, logger
 from src.text.opinions import (
@@ -34,6 +35,8 @@ from src.analysis.semantic_categories import _supersense, FRIENDLY
 N_ACTS = 8
 N_THEMES = 10
 MIN_PARTICIPANTS = 2  # only show a cell backed by >= this many participants
+MIN_PAIRS_TEST = 6    # only significance-test a cell backed by >= this many PAIRED participants
+FDR_ALPHA = 0.05
 
 
 def _results_dir() -> Path:
@@ -42,8 +45,16 @@ def _results_dir() -> Path:
     return d
 
 
+def _trial_order(base_filename: str):
+    """First/Second trial from the filename, e.g. VM27-1-Sync -> 'First'."""
+    parts = base_filename.split("-")
+    if len(parts) >= 2 and parts[1].isdigit():
+        return {"1": "First", "2": "Second"}.get(parts[1])
+    return None
+
+
 def utterance_categories(ttl_path: Path) -> list:
-    """Per utterance: {vm, interview, score, acts:set, themes:set}."""
+    """Per utterance: {vm, interview, order, score, acts:set, themes:set}."""
     from rdflib import Graph
     from nltk.corpus import wordnet as wn
 
@@ -81,7 +92,9 @@ def utterance_categories(ttl_path: Path) -> list:
             if ss:
                 per[i]["themes"].add(ss)
 
-    return [{"vm": vm, "interview": itype, "score": sentiment.get(round(starts[i], 2)),
+    order = _trial_order(base)
+    return [{"vm": vm, "interview": itype, "order": order,
+             "score": sentiment.get(round(starts[i], 2)),
              "acts": d["acts"], "themes": d["themes"]}
             for i, d in per.items()]
 
@@ -163,16 +176,36 @@ def plot_frequency(acts, themes, C, path: Path):
 
 def cell_participant_means(utts, act, theme):
     """Per-participant mean utterance sentiment for one (act, theme) cell."""
+    return list(cell_means_by_vm(utts, act, theme).values())
+
+
+def cell_means_by_vm(utts, act, theme) -> dict:
+    """vm -> mean utterance sentiment for one (act, theme) cell (for paired tests)."""
     by_vm = defaultdict(list)
     for u in utts:
         if u["score"] is not None and act in u["acts"] and theme in u["themes"]:
             by_vm[u["vm"]].append(u["score"])
-    return [mean(v) for v in by_vm.values() if v]
+    return {v: mean(s) for v, s in by_vm.items() if s}
 
 
-def plot_by_condition(acts, themes, S_sync, S_async, path: Path):
-    """Two ACT × THEME sentiment maps side by side: Sync | Async, shared scale."""
-    finite = np.concatenate([S_sync[np.isfinite(S_sync)], S_async[np.isfinite(S_async)]])
+def _bh_fdr(pvals: list) -> list:
+    """Benjamini-Hochberg FDR-adjusted p-values."""
+    p = np.asarray(pvals, dtype=float)
+    n = len(p)
+    if n == 0:
+        return []
+    order = np.argsort(p)
+    ranked = p[order] * n / np.arange(1, n + 1)
+    ranked = np.minimum.accumulate(ranked[::-1])[::-1]
+    out = np.empty(n)
+    out[order] = np.clip(ranked, 0, 1)
+    return out.tolist()
+
+
+def plot_sentiment_pair(acts, themes, S_a, S_b, labels, path: Path):
+    """Two ACT × THEME sentiment maps side by side (label_a | label_b), shared scale."""
+    la, lb = labels
+    finite = np.concatenate([S_a[np.isfinite(S_a)], S_b[np.isfinite(S_b)]])
     vmax = max(0.2, float(np.abs(finite).max())) if finite.size else 0.2
     cmap = plt.get_cmap("RdYlGn").copy(); cmap.set_bad("#eeeeee")
     ylab = [FRIENDLY.get(a, a.split(".")[-1]) for a in acts]
@@ -180,7 +213,7 @@ def plot_by_condition(acts, themes, S_sync, S_async, path: Path):
 
     fig, axes = plt.subplots(1, 2, figsize=(2.0 * len(themes) + 4, 0.6 * len(acts) + 2),
                              sharey=True)
-    for ax, S, title in zip(axes, [S_sync, S_async], ["Sync", "Async"]):
+    for ax, S, title in zip(axes, [S_a, S_b], [la, lb]):
         im = ax.imshow(np.ma.masked_invalid(S), cmap=cmap, vmin=-vmax, vmax=vmax, aspect="auto")
         ax.set_xticks(range(len(themes))); ax.set_xticklabels(xlab, rotation=35, ha="right")
         ax.set_title(title, fontsize=11)
@@ -191,12 +224,54 @@ def plot_by_condition(acts, themes, S_sync, S_async, path: Path):
                     ax.text(j, i, f"{S[i, j]:+.2f}", ha="center", va="center", fontsize=7)
     axes[0].set_yticks(range(len(acts))); axes[0].set_yticklabels(ylab)
     axes[0].set_ylabel("ACT")
-    fig.suptitle(f"Sentiment by ACT × THEME — Sync vs Async  (grey = <{MIN_PARTICIPANTS} participants)",
-                 fontsize=11)
+    fig.suptitle(f"Sentiment by ACT × THEME — {la} vs {lb}  "
+                 f"(grey = <{MIN_PARTICIPANTS} participants)", fontsize=11)
     fig.colorbar(im, ax=axes, fraction=0.02, pad=0.02, label="mean sentiment")
     fig.savefig(path, dpi=130, bbox_inches="tight")
     plt.close(fig)
     logger.info(f"Saved {path}")
+
+
+def plot_frequency_pair(acts, themes, C_a, C_b, labels, path: Path):
+    """Two ACT × THEME co-occurrence count maps side by side, shared scale."""
+    la, lb = labels
+    vmax = max(1, int(max(C_a.max(), C_b.max())))
+    ylab = [FRIENDLY.get(a, a.split(".")[-1]) for a in acts]
+    xlab = [FRIENDLY.get(t, t.split(".")[-1]) for t in themes]
+
+    fig, axes = plt.subplots(1, 2, figsize=(2.0 * len(themes) + 4, 0.6 * len(acts) + 2),
+                             sharey=True)
+    for ax, C, title in zip(axes, [C_a, C_b], [la, lb]):
+        im = ax.imshow(C, cmap="Blues", vmin=0, vmax=vmax, aspect="auto")
+        ax.set_xticks(range(len(themes))); ax.set_xticklabels(xlab, rotation=35, ha="right")
+        ax.set_title(title, fontsize=11)
+        ax.set_xlabel("THEME")
+        for i in range(len(acts)):
+            for j in range(len(themes)):
+                if C[i, j]:
+                    ax.text(j, i, str(int(C[i, j])), ha="center", va="center", fontsize=7,
+                            color="white" if C[i, j] > vmax * 0.6 else "black")
+    axes[0].set_yticks(range(len(acts))); axes[0].set_yticklabels(ylab)
+    axes[0].set_ylabel("ACT")
+    fig.suptitle(f"Co-occurrence frequency by ACT × THEME — {la} vs {lb}", fontsize=11)
+    fig.colorbar(im, ax=axes, fraction=0.02, pad=0.02, label="utterances")
+    fig.savefig(path, dpi=130, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"Saved {path}")
+
+
+def plot_pair_by_factor(utts, acts, themes, key, labels, factor, out):
+    """Build the two-panel sentiment + frequency maps for one factor (condition/order)."""
+    la, lb = labels
+    a_utts = [u for u in utts if u.get(key) == la]
+    b_utts = [u for u in utts if u.get(key) == lb]
+    _, _, S_a, C_a, _ = build_crosstab(a_utts, acts, themes)
+    _, _, S_b, C_b, _ = build_crosstab(b_utts, acts, themes)
+    plot_sentiment_pair(acts, themes, S_a, S_b, labels,
+                        out / f"theme_act_sentiment_by_{factor}.png")
+    plot_frequency_pair(acts, themes, C_a, C_b, labels,
+                        out / f"theme_act_frequency_by_{factor}.png")
+    return a_utts, b_utts
 
 
 def select_pairs(sync_utts, async_utts, acts, themes, named, n_total=9):
@@ -244,20 +319,61 @@ def plot_selected_bars(pairs, sync_utts, async_utts, path: Path):
     logger.info(f"Saved {path}")
 
 
-def save_condition_csv(acts, themes, sync_utts, async_utts, path: Path):
+def save_condition_csv(acts, themes, sync_utts, async_utts, path: Path) -> int:
+    """Per-cell Sync vs Async sentiment, with a PAIRED significance test.
+
+    Each participant present in a cell under BOTH conditions contributes a paired
+    difference (Sync − Async); we report Cohen's dz, the Wilcoxon p, and a
+    Benjamini-Hochberg FDR correction across all tested cells — so the table shows
+    which colour differences are real and which are within noise. Returns the number
+    of FDR-significant cells.
+    """
+    cells = []
+    for a in acts:
+        for t in themes:
+            sv = cell_means_by_vm(sync_utts, a, t)
+            av = cell_means_by_vm(async_utts, a, t)
+            if not sv and not av:
+                continue
+            vms = [v for v in sv if v in av]
+            rec = {"a": a, "t": t,
+                   "sync": round(mean(list(sv.values())), 4) if sv else "",
+                   "n_sync": len(sv), "async_": round(mean(list(av.values())), 4) if av else "",
+                   "n_async": len(av), "n_pairs": len(vms),
+                   "mean_diff": "", "dz": "", "wp": None, "p_fdr": ""}
+            if len(vms) >= MIN_PAIRS_TEST:
+                s = np.array([sv[v] for v in vms]); asy = np.array([av[v] for v in vms])
+                d = s - asy
+                sd = float(d.std(ddof=1))
+                rec["mean_diff"] = round(float(d.mean()), 4)
+                rec["dz"] = round(float(d.mean() / sd), 4) if sd > 0 else 0.0
+                if np.any(d):
+                    try:
+                        rec["wp"] = float(wilcoxon(s, asy).pvalue)
+                    except ValueError:
+                        rec["wp"] = None
+            cells.append(rec)
+
+    testable = [c for c in cells if c["wp"] is not None]
+    for c, q in zip(testable, _bh_fdr([c["wp"] for c in testable])):
+        c["p_fdr"] = round(q, 4)
+
     with open(path, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["act", "theme", "sync_sentiment", "sync_participants",
-                    "async_sentiment", "async_participants"])
-        for a in acts:
-            for t in themes:
-                sm = cell_participant_means(sync_utts, a, t)
-                am = cell_participant_means(async_utts, a, t)
-                if sm or am:
-                    w.writerow([FRIENDLY.get(a, a), FRIENDLY.get(t, t),
-                                round(mean(sm), 4) if sm else "", len(sm),
-                                round(mean(am), 4) if am else "", len(am)])
-    logger.info(f"Saved {path}")
+                    "async_sentiment", "async_participants", "n_pairs",
+                    "mean_diff_sync_minus_async", "cohen_dz", "wilcoxon_p",
+                    "p_fdr", "fdr_significant"])
+        for c in cells:
+            sig = c["p_fdr"] != "" and c["p_fdr"] < FDR_ALPHA
+            w.writerow([FRIENDLY.get(c["a"], c["a"]), FRIENDLY.get(c["t"], c["t"]),
+                        c["sync"], c["n_sync"], c["async_"], c["n_async"], c["n_pairs"],
+                        c["mean_diff"], c["dz"],
+                        round(c["wp"], 4) if c["wp"] is not None else "", c["p_fdr"], sig])
+
+    n_sig = sum(1 for c in cells if c["p_fdr"] != "" and c["p_fdr"] < FDR_ALPHA)
+    logger.info(f"Saved {path} ({len(testable)} cells tested, {n_sig} FDR-significant)")
+    return n_sig
 
 
 def save_csv(acts, themes, S, C, P, path: Path):
@@ -297,20 +413,22 @@ def main() -> int:
     plot_sentiment(acts, themes, S, P, out / "theme_act_sentiment.png")
     plot_frequency(acts, themes, C, out / "theme_act_frequency.png")
 
-    # split by condition, aligned to the pooled axes
-    sync_utts = [u for u in utts if u["interview"] == "Sync"]
-    async_utts = [u for u in utts if u["interview"] == "Async"]
-    _, _, S_sync, _, _ = build_crosstab(sync_utts, acts, themes)
-    _, _, S_async, _, _ = build_crosstab(async_utts, acts, themes)
-    plot_by_condition(acts, themes, S_sync, S_async, out / "theme_act_sentiment_by_condition.png")
-    save_condition_csv(acts, themes, sync_utts, async_utts, out / "theme_act_crosstab_by_condition.csv")
+    # split by condition and by trial order, aligned to the pooled axes
+    # (each produces a sentiment pair map + a frequency pair map)
+    sync_utts, async_utts = plot_pair_by_factor(
+        utts, acts, themes, "interview", ("Sync", "Async"), "condition", out)
+    plot_pair_by_factor(
+        utts, acts, themes, "order", ("First", "Second"), "order", out)
+    n_sig = save_condition_csv(acts, themes, sync_utts, async_utts,
+                               out / "theme_act_crosstab_by_condition.csv")
 
     named = [("verb.motion", "noun.state"), ("verb.perception", "noun.event"),
              ("verb.emotion", "noun.body")]
     pairs = select_pairs(sync_utts, async_utts, acts, themes, named)
     plot_selected_bars(pairs, sync_utts, async_utts, out / "theme_act_selected_bars.png")
 
-    print("\n=== Selected ACT × THEME pairs: Sync vs Async ===")
+    print(f"\n=== Selected ACT × THEME pairs: Sync vs Async "
+          f"({n_sig} cell(s) FDR-significant, see by_condition.csv) ===")
     for a, t in pairs:
         sm = cell_participant_means(sync_utts, a, t)
         am = cell_participant_means(async_utts, a, t)

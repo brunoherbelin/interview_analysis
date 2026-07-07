@@ -15,6 +15,7 @@ configs/config.json
 data/raw/*
 data/processed/*
 data/results/*
+data/senticnet/
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 !data/results/.gitkeep
