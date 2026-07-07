@@ -12,6 +12,8 @@ interview so Sync/Async conditions can be compared later.
 """
 
 import json
+import re
+from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Any, List
 
@@ -22,13 +24,61 @@ from src.text.sentiment import (
 
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 
+# Backchannel / approval / discourse words that carry no topic on their own. Used
+# (together with English stopwords) to detect content-free participant turns. Such
+# turns — "yes", "okay, good", "probably" — otherwise form meaningless clusters
+# that, being uttered by almost everyone, dominate the participant-coverage
+# ranking in representative_topics.py. Shared with that script.
+DISCOURSE_MARKERS = frozenset({
+    "yes", "yeah", "yep", "yup", "no", "nope", "nah", "ok", "okay", "k",
+    "sure", "right", "good", "fine", "great", "nice", "cool", "alright",
+    "probably", "maybe", "perhaps", "exactly", "definitely", "absolutely",
+    "correct", "agreed", "well", "so", "um", "uh", "uhm", "hmm", "hm",
+    "mhm", "mm", "oh", "ah", "aha", "yay",
+})
+
+_WORD_RE = re.compile(r"[a-z]+")
+
+
+@lru_cache(maxsize=1)
+def _english_stopwords():
+    from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS
+    return ENGLISH_STOP_WORDS
+
+
+def content_tokens(text: str) -> List[str]:
+    """Lower-cased word tokens with English stopwords and discourse markers removed."""
+    sw = _english_stopwords()
+    return [t for t in _WORD_RE.findall(text.lower())
+            if t not in sw and t not in DISCOURSE_MARKERS]
+
+
+def is_low_content(text: str, min_content: int = 1) -> bool:
+    """True if the utterance has fewer than `min_content` topic-bearing words."""
+    return len(content_tokens(text)) < min_content
+
+
+def is_filler_topic(keywords: List[str]) -> bool:
+    """True if a topic's keyword label is empty or entirely fillers/stopwords.
+
+    BERTopic pads short keyword lists with empty strings, so ignore those.
+    """
+    real = [k.lower() for k in keywords if k and k.strip()]
+    if not real:
+        return True
+    sw = _english_stopwords()
+    return all(k in sw or k in DISCOURSE_MARKERS for k in real)
+
 
 def collect_participant_documents(dataset, trans_dir: Path) -> List[Dict[str, Any]]:
     """Gather every participant utterance across the dataset as a topic document.
 
-    Each document carries its metadata plus `doc_text` = previous_other + text.
+    Each document carries its metadata plus `doc_text` (the participant text).
+    Content-free turns (pure fillers / approvals, e.g. "yes", "okay, good") are
+    skipped so they don't form meaningless topic clusters.
     """
     documents: List[Dict[str, Any]] = []
+    n_dropped = 0
     for vm_name in dataset:
         vm_trans = trans_dir / vm_name
         if not vm_trans.is_dir():
@@ -45,6 +95,9 @@ def collect_participant_documents(dataset, trans_dir: Path) -> List[Dict[str, An
                 text = seg.get("text", "").strip()
                 if not text:
                     continue
+                if is_low_content(text):        # pure filler/approval, no topic word
+                    n_dropped += 1
+                    continue
                 previous_other = seg.get("previous_other", "")
                 documents.append({
                     "vm": vm_name,
@@ -55,8 +108,11 @@ def collect_participant_documents(dataset, trans_dir: Path) -> List[Dict[str, An
                     "end": seg["end"],
                     "previous_other": previous_other,
                     "text": text,
-                    "doc_text": (previous_other + " " + text).strip(),
+                    "doc_text": text,
                 })
+    if n_dropped:
+        logger.info(f"Skipped {n_dropped} content-free participant utterance(s) "
+                    f"(fillers/approvals); kept {len(documents)} for topic modeling")
     return documents
 
 

@@ -35,6 +35,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from src.config import config, logger
+from src.text.topics import is_filler_topic
 
 TOP_N = 18
 OUTLIER_TOPIC = -1
@@ -102,6 +103,8 @@ def build_topic_table(model: dict, interviews: list) -> list:
     topics = []
     for tid, m in meta.items():
         if tid == OUTLIER_TOPIC:
+            continue
+        if is_filler_topic(m.get("keywords", [])):   # empty / all-filler label
             continue
         part_share = {vm: round(vm_counts[vm][tid] / vm_total[vm], 4)
                       for vm in vm_counts if vm_counts[vm].get(tid, 0) and vm_total[vm]}

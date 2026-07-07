@@ -101,6 +101,10 @@ interview_analysis/
 │       ├── sync_async_sentiment_tests.json   # paired tests + method agreement
 │       ├── sync_async_paired.png             # paired-line plot per measure
 │       ├── sync_async_method_correlation.png
+│       ├── order_sentiment_scores.csv        # first/second-trial per-interview scores
+│       ├── order_sentiment_tests.json        # paired tests (order factor)
+│       ├── order_paired.png                  # first-vs-second paired-line plot
+│       ├── order_method_correlation.png
 │       ├── sentiment_histograms.png          # score distributions (normality check)
 │       ├── representative_opinions.csv       # ranked shared opinions (from KG)
 │       ├── opinion_participant_heatmap.png   # opinion topic × participant sentiment
@@ -122,7 +126,8 @@ interview_analysis/
 │       ├── cluster_features.csv              # per-interview signature + cluster
 │       ├── cluster_validation.json           # k selection, stability, cluster×condition
 │       ├── cluster_profiles.png              # cluster × feature profile (interpretable)
-│       └── cluster_pca.png                   # interviews in signature space (PCA)
+│       ├── cluster_pca.png                   # signature space (PCA), shape = Sync/Async
+│       └── cluster_pca_order.png             # signature space (PCA), shape = First/Second trial
 ├── configs/                # Configuration files
 │   └── config.json         # Main configuration
 ├── src/                    # Source code
@@ -382,8 +387,10 @@ cross-check against the transformer.
 
 Topics are modeled on the **participant only**, over **all interviews at once**
 (topics are a corpus-level property), then reported per interview so `Sync`/`Async`
-conditions can be compared. Each **document** is a participant utterance embedded
-with its `previous_other` context.
+conditions can be compared. Each **document** is a single participant utterance
+(participant text only, consistent with the knowledge-graph/opinion path). Content-
+free turns — pure fillers/approvals like `"yes"`, `"okay, good"` — are dropped so
+they don't form meaningless clusters.
 
 Two files are produced:
 
@@ -420,8 +427,9 @@ Two files are produced:
 
 - **BERTopic** — embedding-based topic modeling: sentence embeddings → UMAP
   dimensionality reduction → HDBSCAN clustering → class-based TF-IDF (c-TF-IDF)
-  keyword extraction. English stopwords are removed from the keyword step only
-  (embeddings use the full text, including `previous_other`).
+  keyword extraction. English stopwords are removed from the keyword step; the
+  documents are participant text only (content-free filler turns are dropped
+  before fitting, and any residual empty/all-filler topic is skipped downstream).
 - Embeddings: [`sentence-transformers/all-MiniLM-L6-v2`](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2).
 - Library: [BERTopic](https://github.com/MaartenGr/BERTopic).
 
@@ -655,6 +663,21 @@ Outputs: `sync_async_sentiment_scores.csv`, `sync_async_sentiment_tests.json`,
 > With only a few participants this validates the **procedure**, not significance
 > (Wilcoxon cannot reach p<0.05 below n=6).
 
+### Aspect 1b — First vs Second trial (order)
+
+```bash
+python -m src.analysis.order_sentiment
+```
+
+Same paired design and three measures as Aspect 1, but the within-subject factor is
+the **order** of the two trials (which came first), read from the filename
+(`VM27-1-Sync` = first trial, `VM27-2-Async` = second). Since Sync/Async was
+randomised across trials, order is an orthogonal factor for checking practice /
+fatigue / habituation effects.
+
+Outputs: `order_sentiment_scores.csv`, `order_sentiment_tests.json`,
+`order_paired.png` (paired-line plot), `order_method_correlation.png`.
+
 ### Aspect 2 — representative opinions (from the knowledge graph)
 
 ```bash
@@ -737,15 +760,18 @@ python -m src.analysis.participant_clustering
 
 Groups interviews by a small, **named** "experience signature" (avoids clustering a
 huge redundant matrix — the curse-of-dimensionality trap). Each interview →
-7 features: 4 affective dimensions (mean SenticNet/Hourglass `sentics`),
-`embodiment` (perceive/feel/body share), `reflection` (think/say share), and
-`valence` (RoBERTa). Two-step validated pipeline: standardize → choose k by
-**silhouette** → **k-means** (baseline) + **Gaussian Mixture** (soft) → **bootstrap
-stability** (adjusted Rand) → **PCA** view.
+6 features chosen from prior analyses for prevalence and/or Sync/Async
+discrimination: `joy`, `eagerness`, `pleasantness` (Hourglass emotion prevalence),
+`body` (cognition/emotion acts × body theme), `motion` (motion acts ×
+state/object/artifact themes), and `polarity` (mean SenticNet concept polarity). A
+variance guard drops any near-constant feature. Two-step validated pipeline:
+standardize → choose k by **silhouette** (k ≤ 4) → **k-means** (baseline) + **Gaussian
+Mixture** (soft) → **bootstrap stability** (adjusted Rand) → **PCA** view.
 
 Outputs: `cluster_profiles.png` (cluster × feature z-scores — each cluster is
-describable in a sentence), `cluster_pca.png` (2-D, coloured by cluster, shape by
-condition), `cluster_features.csv`, `cluster_validation.json` (k selection, stability,
+describable in a sentence), `cluster_pca.png` and `cluster_pca_order.png` (2-D,
+coloured by cluster, shape = Sync/Async and First/Second trial respectively),
+`cluster_features.csv`, `cluster_validation.json` (k selection, stability,
 cluster × Sync/Async).
 
 > Meaningful at **n ≳ 30 participants** (expect 2–4 clusters)
