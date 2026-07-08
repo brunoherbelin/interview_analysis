@@ -87,7 +87,7 @@ class ConceptAffect:
     def __init__(self):
         from src.text.senticnet_kb import load_concept_data
         self._data = load_concept_data()      # None -> use the pip package
-        self._neutralize = config.get("senticnet.neutralize_concrete_nouns", True)
+        self._neutralize = config.get("senticnet.neutralize_concrete_nouns", False)
         if self._data is None:
             from senticnet.senticnet import SenticNet
             self._sn = SenticNet()

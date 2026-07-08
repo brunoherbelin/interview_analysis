@@ -133,7 +133,10 @@ interview_analysis/
 │       ├── cluster_pca_order.png             # signature space (PCA), shape = First/Second trial
 │       ├── condition_contrast.csv/.png       # paired Sync−Async feature contrast (+FDR)
 │       ├── order_contrast.csv/.png           # paired First−Second feature contrast (+FDR)
-│       └── order_scatter_joy_body.png        # First/Second in (joy, body-focus) space
+│       ├── order_scatter_joy_body.png        # First/Second in (joy, body-focus) space
+│       ├── semantic_probe_<model>_*.csv/.png # TOPICAL probe salience + condition/order contrasts
+│       ├── semantic_felt_<model>_*.csv/.png  # FELT (sentiment-gated) scores + contrasts
+│       └── semantic_{probe,felt}_<model>_examples.json  # top matches per probe (validity check)
 ├── configs/                # Configuration files
 │   └── config.json         # Main configuration
 ├── src/                    # Source code
@@ -829,6 +832,78 @@ distributions can be compared directly.
 > body / joy / perception talk in the *first* trial, more event talk in the
 > *second*), whereas **condition** (Sync/Async) yields none — a systematic
 > order/habituation effect rather than a condition effect.
+
+### Aspect 4 — semantic search & probes (SentenceTransformers)
+
+```bash
+# Tier 1: query the participant corpus in natural language
+python -m src.analysis.semantic_search search --query "felt weightless and floating" --top-k 10
+python -m src.analysis.semantic_search search --query "..." --rerank   # cross-encoder re-rank
+
+# Tier 2: paired condition/order contrast over semantic probes
+python -m src.analysis.semantic_search probe                       # both factors, both modes
+python -m src.analysis.semantic_search probe --mode felt --factor order
+python -m src.analysis.semantic_search probe --probes-file my_probes.json
+python -m src.analysis.semantic_search probe --model multi-qa-mpnet-base-dot-v1   # higher quality
+```
+
+`--model` overrides `config.semantic.model` for both subcommands; normalization is
+auto-selected (cosine models are L2-normalized, `*-dot-*` models use raw dot product),
+and embeddings are cached per model. Every result file is tagged with the model name
+(`semantic_probe_<model>_...`), so runs from different models don't overwrite each other.
+
+**Config & model choice.** The `semantic` block of `configs/config.json` controls this stage:
+
+```json
+"semantic": {
+  "model": "multi-qa-MiniLM-L6-cos-v1",              // bi-encoder used to embed corpus + queries
+  "rerank_model": "cross-encoder/ms-marco-MiniLM-L-6-v2",  // optional --rerank cross-encoder
+  "salience_top_k": 3,     // # of top utterance similarities averaged into each probe score
+  "min_pairs": 8           // min paired participants required to test a probe
+}
+```
+
+Any [sentence-transformers](https://huggingface.co/sentence-transformers) model name works —
+it is downloaded from Hugging Face on first use and cached (weights in `~/.cache/huggingface`,
+corpus embeddings in `data/processed/semantic/`). This task is **asymmetric** (short query →
+longer participant statement), so *multi-qa* models are the right family. Tested / suggested:
+
+| model | dim | sim | size | notes |
+|-------|-----|-----|------|-------|
+| `multi-qa-MiniLM-L6-cos-v1` | 384 | cosine | ~80 MB | **default** — fast, good |
+| `multi-qa-mpnet-base-dot-v1` | 768 | dot | ~420 MB | **highest quality** — gave the FDR-significant order result |
+| `multi-qa-distilbert-cos-v1` | 768 | cosine | ~250 MB | middle ground |
+| `msmarco-bert-base-dot-v5` | 768 | dot | ~420 MB | MS MARCO passage retrieval |
+
+Other options: for *symmetric* similarity (utterance↔utterance rather than question→passage),
+`all-mpnet-base-v2` (best general) or `all-MiniLM-L6-v2` (already cached); for non-English
+corpora, `paraphrase-multilingual-mpnet-base-v2`; stronger re-ranker: `cross-encoder/ms-marco-MiniLM-L-12-v2`.
+
+Embeds every content-bearing **participant** utterance with an asymmetric query→passage
+model (`multi-qa-MiniLM-L6-cos-v1`, config `semantic.model`; embeddings cached under
+`data/processed/semantic/`). **Tier 1** returns the most similar statements with metadata
+(participant, Sync/Async, First/Second, sentiment, timestamp, the question answered) and
+an optional cross-encoder re-rank. **Tier 2** turns each probe into a per-utterance
+relevance score, aggregates it per participant×level (mean of the top-k utterance
+similarities), and runs the same paired **Wilcoxon + FDR** contrast as Aspect 3b. Method:
+Distributed Dictionary Representations / semantic projection (Garten et al. 2018; Grand et
+al. 2022).
+
+Tier 2 has two modes (`--mode`): **topical** = similarity only (measures *what was talked
+about*), and **felt** = similarity **gated by sentiment agreeing with each probe's
+`valence`** (positive/negative → aligned sentiment, neutral → intensity `|s|`). Felt mode
+fixes the stance problem — a "felt anxious" probe stops matching "I did **not** feel
+anxious." Outputs are prefixed `semantic_probe_*` (topical) and `semantic_felt_*` (felt):
+`_scores.csv`, `_<factor>_contrast.csv/.png`, `_examples.json`.
+
+> **Read the `*_examples.json` before trusting a probe** — topical similarity captures the
+> *topic*, not the stance. Probes are exploratory unless pre-declared; significance comes
+> only from the paired FDR test. On the current corpus every order probe trends toward the
+> *first* trial. With the higher-quality `multi-qa-mpnet-base-dot-v1`, topical **anxiety /
+> unease is significantly higher in the first trial** (dz≈0.60, p≈0.001, **FDR≈0.01**) —
+> first-exposure anxiety that habituates. The sentiment-gated **felt** anxiety trends the
+> same way (dz≈0.34) but doesn't survive FDR, bounded by transformer-sentiment quality.
+> Condition (Sync/Async) remains null in both modes and models.
 
 ## License
 

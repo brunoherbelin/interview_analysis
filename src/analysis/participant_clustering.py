@@ -7,7 +7,7 @@ uninterpretable), each interview is reduced to a small, NAMED signature chosen f
 prior analyses — features that are prevalent across participants (so they describe
 the shared experience) and/or discriminate Sync vs Async:
 
-  - ecstasy / loathing / bliss — prevalence of the corpus's top Hourglass emotions
+  - joy / eagerness / pleasantness — prevalence of the corpus's top Hourglass emotions
   - body — thinking about / feeling in the body (cognition/emotion acts × body theme)
   - motion — describing movement (motion acts over state/object/artifact themes),
     a Sync/Async discriminator

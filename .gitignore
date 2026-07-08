@@ -10,6 +10,7 @@ venv/
 
 # --- Local config with secrets (HF token). Use configs/config.example.json ---
 configs/config.json
+configs/semantic_probe.json
 
 # --- Data: keep folder structure only (.gitkeep), ignore all contents ---
 data/raw/*

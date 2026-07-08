@@ -1,0 +1,42 @@
+{
+  "presence_immersion": {
+    "query": "I felt like I was really there, fully immersed in the environment",
+    "valence": "neutral"
+  },
+  "bodily_dissolution": {
+    "query": "I lost the sense of my body, felt disembodied or dissolved",
+    "valence": "neutral"
+  },
+  "relaxation_calm": {
+    "query": "I felt calm, relaxed and at peace",
+    "valence": "positive"
+  },
+  "anxiety_unease": {
+    "query": "I felt anxious, uneasy or uncomfortable",
+    "valence": "negative"
+  },
+  "time_distortion": {
+    "query": "my sense of time changed, time felt distorted",
+    "valence": "neutral"
+  },
+  "connection": {
+    "query": "I felt connected to something larger than myself",
+    "valence": "positive"
+  },
+  "vividness_realness": {
+    "query": "the experience felt vivid and real",
+    "valence": "neutral"
+  },
+  "floating_lightness": {
+    "query": "I felt light, floating or weightless",
+    "valence": "positive"
+  },
+  "body_awareness": {
+    "query": "I became strongly aware of sensations in my body",
+    "valence": "neutral"
+  },
+  "emotional_intensity": {
+    "query": "I felt a strong, intense emotion",
+    "valence": "neutral"
+  }
+}
