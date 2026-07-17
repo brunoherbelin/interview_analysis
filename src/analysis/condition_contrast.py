@@ -17,10 +17,16 @@ paired t-test and Wilcoxon p-values, and a Benjamini–Hochberg FDR correction a
 all tested features. The significant (or, absent those, the largest) contrasts are
 plotted, giving a direct answer to "what do people report more of in each condition".
 
-The same script does the trial-ORDER contrast (First − Second) via --factor order.
+The same script does the trial-ORDER contrast (First − Second) via --factor order, and
+the condition×ORDER INTERACTION via --interaction. The latter is a 2×2 crossover:
+condition and order are within-subject but confounded (each participant is Sync-first or
+Async-first), so the interaction is the carryover/sequence effect, tested BETWEEN the two
+starting groups (SyncFirst vs AsyncFirst) by comparing subject totals (First + Second),
+which cancel both main effects (Grizzle 1965; Senn, *Cross-over Trials*).
 
 Run: venv/bin/python -m src.analysis.condition_contrast            # Sync − Async
      venv/bin/python -m src.analysis.condition_contrast --factor order   # First − Second
+     venv/bin/python -m src.analysis.condition_contrast --interaction    # condition×order
 """
 
 import csv
@@ -35,7 +41,7 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from scipy.stats import ttest_rel, wilcoxon
+from scipy.stats import ttest_rel, wilcoxon, mannwhitneyu, ttest_ind
 
 from src.config import config, logger
 from src.text.opinions import (
@@ -49,6 +55,7 @@ FACTORS = {
 }
 N_CELLS = 12          # most frequent ACT × THEME co-occurrences to include
 MIN_PAIRS = 8         # need at least this many paired participants to test a feature
+MIN_GROUP = 5         # min participants per starting sequence for the interaction test
 FDR_ALPHA = 0.05
 
 
@@ -344,10 +351,138 @@ def plot_feature_scatter(rows, results, levels, factor, path,
     logger.info(f"Saved {path}")
 
 
+# --------------------------------------------------------------------------- #
+# Condition × Order interaction (2×2 crossover / carryover)
+# --------------------------------------------------------------------------- #
+def interaction_contrast(interviews, cols) -> tuple:
+    """Test the condition×order interaction over the feature pool.
+
+    Condition and order are within-subject but confounded (each participant is
+    Sync-first or Async-first), so this is a 2×2 crossover: the interaction is the
+    carryover/sequence effect, tested BETWEEN the two starting groups. Per feature,
+    the subject total (First + Second) cancels both main effects, so we compare
+    totals between SyncFirst and AsyncFirst with Mann-Whitney U (+ Welch t), FDR.
+    Returns (results, n_syncfirst, n_asyncfirst).
+    """
+    recs = [{"vm": iv["vm"], "condition": iv["interview"], "order": iv["order"],
+             "feats": interview_vector(iv, cols)} for iv in interviews]
+    by_vm = defaultdict(dict)
+    for r in recs:
+        if r["order"] in ("First", "Second"):
+            by_vm[r["vm"]][r["order"]] = r
+    subjects = [("SyncFirst" if d["First"]["condition"] == "Sync" else "AsyncFirst",
+                 d["First"], d["Second"])
+                for d in by_vm.values() if "First" in d and "Second" in d]
+    n_sf = sum(1 for s in subjects if s[0] == "SyncFirst")
+    n_af = len(subjects) - n_sf
+
+    results, fdr_p = [], []
+    for f in cols:
+        totals = {"SyncFirst": [], "AsyncFirst": []}
+        for seq, first, second in subjects:
+            a, b = first["feats"].get(f), second["feats"].get(f)
+            if a is None or b is None or math.isnan(a) or math.isnan(b):
+                continue
+            totals[seq].append(a + b)
+        A, B = np.array(totals["SyncFirst"]), np.array(totals["AsyncFirst"])
+        rec = {"feature": f, "label": feature_label(f), "n_syncfirst": int(A.size),
+               "n_asyncfirst": int(B.size), "mean_total_syncfirst": None,
+               "mean_total_asyncfirst": None, "U": None, "p": None, "welch_p": None,
+               "rank_biserial": None, "p_fdr": None, "higher_in": None,
+               "testable": A.size >= MIN_GROUP and B.size >= MIN_GROUP}
+        if rec["testable"]:
+            u = mannwhitneyu(A, B, alternative="two-sided")
+            t = ttest_ind(A, B, equal_var=False)
+            rec.update(mean_total_syncfirst=float(A.mean()), mean_total_asyncfirst=float(B.mean()),
+                       U=float(u.statistic), p=float(u.pvalue), welch_p=float(t.pvalue),
+                       rank_biserial=float(1 - 2 * u.statistic / (A.size * B.size)),
+                       higher_in="SyncFirst" if A.mean() > B.mean() else "AsyncFirst")
+            fdr_p.append(float(u.pvalue))
+        results.append(rec)
+
+    for r, q in zip([r for r in results if r["testable"]], _bh_fdr(fdr_p)):
+        r["p_fdr"] = q
+    results.sort(key=lambda r: abs(r["rank_biserial"]) if r["rank_biserial"] is not None else -1,
+                 reverse=True)
+    return results, n_sf, n_af
+
+
+def plot_interaction(results, n_sf, n_af, path):
+    tested = [r for r in results if r["testable"]]
+    if not tested:
+        logger.warning("No testable features for interaction; skipping plot.")
+        return
+    sig = [r for r in tested if r["p_fdr"] is not None and r["p_fdr"] < FDR_ALPHA]
+    show = sorted(sig if len(sig) >= 3 else tested[:12], key=lambda r: r["rank_biserial"])
+    rb = [r["rank_biserial"] for r in show]
+    colors = ["#2ca02c" if v > 0 else "#d62728" for v in rb]
+    fig, ax = plt.subplots(figsize=(7.5, 0.5 * len(show) + 1.9))
+    ax.barh(range(len(show)), rb, color=colors)
+    ax.set_yticks(range(len(show))); ax.set_yticklabels([r["label"] for r in show], fontsize=8)
+    for i, r in enumerate(show):
+        star = " *" if (r["p_fdr"] is not None and r["p_fdr"] < FDR_ALPHA) else ""
+        ax.text(rb[i] + (0.02 if rb[i] >= 0 else -0.02), i, f"{rb[i]:+.2f}{star}",
+                va="center", ha="left" if rb[i] >= 0 else "right", fontsize=7, color="0.3")
+    ax.axvline(0, color="0.6", lw=1)
+    nsig = len(sig)
+    ax.set_xlabel(f"rank-biserial   (→ higher total in SyncFirst    ← in AsyncFirst)")
+    ax.set_title(f"Condition × Order interaction (carryover): SyncFirst vs AsyncFirst totals\n"
+                 f"n={n_sf} vs {n_af}; {nsig} FDR-significant; * = FDR<{FDR_ALPHA}", fontsize=10)
+    fig.tight_layout(); fig.savefig(path, dpi=130); plt.close(fig)
+    logger.info(f"Saved {path}")
+
+
+def run_interaction(interviews, cols, out) -> int:
+    results, n_sf, n_af = interaction_contrast(interviews, cols)
+    tested = [r for r in results if r["testable"]]
+    if not tested:
+        logger.error("No features had enough participants per sequence for the interaction test.")
+        return 1
+    sig = [r for r in tested if r["p_fdr"] is not None and r["p_fdr"] < FDR_ALPHA]
+
+    with open(out / "interaction_contrast.csv", "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["feature", "label", "n_syncfirst", "n_asyncfirst",
+                    "mean_total_syncfirst", "mean_total_asyncfirst", "mannwhitney_U",
+                    "p", "welch_p", "rank_biserial", "p_fdr", "higher_total_in", "fdr_significant"])
+        for r in results:
+            s = r["p_fdr"] is not None and r["p_fdr"] < FDR_ALPHA
+            w.writerow([r["feature"], r["label"], r["n_syncfirst"], r["n_asyncfirst"],
+                        _round(r["mean_total_syncfirst"]), _round(r["mean_total_asyncfirst"]),
+                        _round(r["U"]), _round(r["p"]), _round(r["welch_p"]),
+                        _round(r["rank_biserial"]), _round(r["p_fdr"]), r["higher_in"] or "", s])
+    logger.info(f"Saved {out/'interaction_contrast.csv'}")
+    plot_interaction(results, n_sf, n_af, out / "interaction_contrast.png")
+    with open(out / "interaction_contrast_summary.json", "w", encoding="utf-8") as f:
+        json.dump({"analysis": "condition_x_order_interaction",
+                   "n_syncfirst": n_sf, "n_asyncfirst": n_af,
+                   "n_features_tested": len(tested), "n_fdr_significant": len(sig),
+                   "top": [{k: r[k] for k in ("feature", "label", "mean_total_syncfirst",
+                            "mean_total_asyncfirst", "U", "p", "rank_biserial", "p_fdr",
+                            "higher_in")} for r in tested[:15]]},
+                  f, indent=2, ensure_ascii=False)
+
+    print(f"\n=== Condition × Order interaction (2×2 crossover, "
+          f"{n_sf} SyncFirst vs {n_af} AsyncFirst), {len(tested)} features tested ===")
+    print(f"  test = Mann-Whitney on subject totals (First+Second) between starting groups; "
+          f"FDR-significant: {len(sig)}")
+    print(f"  {'feature':28s} {'rb':>6s} {'totSF':>7s} {'totAF':>7s} {'p':>6s} {'p_fdr':>6s}  higher")
+    for r in tested[:12]:
+        star = "*" if (r["p_fdr"] is not None and r["p_fdr"] < FDR_ALPHA) else " "
+        print(f" {star}{r['label'][:27]:28s} {r['rank_biserial']:+6.2f} "
+              f"{r['mean_total_syncfirst']:+7.3f} {r['mean_total_asyncfirst']:+7.3f} "
+              f"{r['p']:6.3f} {r['p_fdr']:6.3f}  {r['higher_in']}")
+    logger.info("Condition × Order interaction analysis complete!")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Paired within-subject feature contrast")
     ap.add_argument("--factor", choices=list(FACTORS), default="condition",
                     help="pairing factor: condition (Sync−Async) or order (First−Second)")
+    ap.add_argument("--interaction", action="store_true",
+                    help="test the condition×order interaction (SyncFirst vs AsyncFirst) "
+                         "instead of a single-factor paired contrast")
     args = ap.parse_args()
     spec = FACTORS[args.factor]
     key, levels = spec["key"], spec["levels"]
@@ -369,6 +504,10 @@ def main() -> int:
     logger.info(f"Loaded {len(interviews)} interviews")
 
     cols = choose_columns(interviews, min_present=max(MIN_PAIRS, len(interviews) // 5))
+
+    if args.interaction:
+        return run_interaction(interviews, cols, _results_dir())
+
     rows = [{"vm": iv["vm"], "level": iv[key], "feats": interview_vector(iv, cols)}
             for iv in interviews if iv[key] in levels]
 

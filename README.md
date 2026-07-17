@@ -105,6 +105,9 @@ interview_analysis/
 │       ├── order_sentiment_tests.json        # paired tests (order factor)
 │       ├── order_paired.png                  # first-vs-second paired-line plot
 │       ├── order_method_correlation.png
+│       ├── interaction_scores.csv            # per-participant totals/diffs + sequence
+│       ├── interaction_tests.json            # condition×order crossover tests
+│       ├── interaction_plot.png              # 2×2 interaction (cell means ± SEM)
 │       ├── sentiment_histograms.png          # score distributions (normality check)
 │       ├── representative_opinions.csv       # ranked shared opinions (from KG)
 │       ├── opinion_participant_heatmap.png   # opinion topic × participant sentiment
@@ -134,6 +137,7 @@ interview_analysis/
 │       ├── condition_contrast.csv/.png       # paired Sync−Async feature contrast (+FDR)
 │       ├── order_contrast.csv/.png           # paired First−Second feature contrast (+FDR)
 │       ├── order_scatter_joy_body.png        # First/Second in (joy, body-focus) space
+│       ├── interaction_contrast.csv/.png     # condition×order interaction over features (+FDR)
 │       ├── semantic_probe_<model>_*.csv/.png # TOPICAL probe salience + condition/order contrasts
 │       ├── semantic_felt_<model>_*.csv/.png  # FELT (sentiment-gated) scores + contrasts
 │       └── semantic_{probe,felt}_<model>_examples.json  # top matches per probe (validity check)
@@ -698,6 +702,31 @@ fatigue / habituation effects.
 Outputs: `order_sentiment_scores.csv`, `order_sentiment_tests.json`,
 `order_paired.png` (paired-line plot), `order_method_correlation.png`.
 
+### Aspect 1c — Condition × Order interaction (2×2 crossover)
+
+```bash
+python -m src.analysis.interaction_sentiment
+```
+
+Tests the **interaction** between condition and order. Because every participant does both
+conditions, one per trial, condition (Sync/Async) and order (First/Second) are within-subject
+but **confounded** — a participant is either Sync-first or Async-first. So this is a 2×2
+**crossover**, and the interaction is the **carryover/sequence effect**, tested *between*
+subjects by comparing the two starting groups (**SyncFirst vs AsyncFirst**). Per the standard
+crossover result, the subject **total** (first + second score) cancels both main effects, so a
+difference in totals between sequences isolates the interaction — tested with **Mann-Whitney U**
+(+ Welch t) per measure, with FDR, alongside the 2×2 interaction plot (non-parallel lines =
+interaction).
+
+Outputs: `interaction_scores.csv` (per participant: per-measure first/second/total/diff +
+sequence), `interaction_tests.json` (U, p, Welch t, rank-biserial, p_FDR, 2×2 cell means),
+`interaction_plot.png` (cell means ± SEM).
+
+> On the current corpus (21 SyncFirst, 17 AsyncFirst): a **suggestive** carryover — SyncFirst
+> participants show higher overall RoBERTa sentiment (p≈0.08), with a weaker opposite trend on
+> Opinion — but nothing survives FDR at this n. The crossover lines visibly cross, so an
+> order-dependent condition effect (priming) is plausible and worth a larger sample.
+
 ### Aspect 2 — representative opinions (from the knowledge graph)
 
 ```bash
@@ -809,6 +838,7 @@ cluster × Sync/Async).
 ```bash
 python -m src.analysis.condition_contrast                 # Sync − Async
 python -m src.analysis.condition_contrast --factor order  # First − Second trial
+python -m src.analysis.condition_contrast --interaction   # condition × order (2×2 crossover)
 ```
 
 Clustering showed the conditions don't form separable groups — but a systematic
@@ -828,10 +858,20 @@ level) with joy prevalence on x and a composite "body focus" score (mean z of th
 significant body contrasts) on y, plus group-mean markers, so the two levels'
 distributions can be compared directly.
 
+`--interaction` instead tests the **condition × order interaction** over the same feature
+pool. This is a 2×2 **crossover** (condition and order are within-subject but confounded),
+so the interaction is the carryover/sequence effect — tested *between* the starting groups
+(**SyncFirst vs AsyncFirst**) by comparing each feature's subject **total** (First+Second),
+which cancels both main effects, with **Mann-Whitney U** (+ Welch t), rank-biserial, and FDR.
+Outputs: `interaction_contrast.csv`, `interaction_contrast.png` (features by signed
+rank-biserial), `interaction_contrast_summary.json`. (For the same test on the three
+interview-level sentiment measures plus the classic 2×2 interaction plot, see Aspect 1c.)
+
 > On the current corpus: **order** yields several FDR-significant contrasts (more
 > body / joy / perception talk in the *first* trial, more event talk in the
 > *second*), whereas **condition** (Sync/Async) yields none — a systematic
-> order/habituation effect rather than a condition effect.
+> order/habituation effect rather than a condition effect. The **condition × order
+> interaction** is null after FDR (features trend SyncFirst-higher but none survive).
 
 ### Aspect 4 — semantic search & probes (SentenceTransformers)
 
